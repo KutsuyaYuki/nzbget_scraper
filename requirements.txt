@@ -1,0 +1,7 @@
+requests
+pandas
+datetime
+future
+shodan
+python-dotenv
+tqdm
