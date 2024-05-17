@@ -31,6 +31,7 @@ class NZBGetAPI:
         secure=False,
         verify_certificate=True,
         port=6789,
+        timeout=None  # Add timeout parameter
     ):
         """Initialize NZBGet API and set headers needed later."""
 
@@ -40,7 +41,8 @@ class NZBGetAPI:
             url = f"http{ssl}://{host}:{port}/{quote(username)}:{quote(password)}{urlbase}/xmlrpc"
         else:
             url = f"http://{host}/xmlrpc"
-        r = requests.head(url)
+        print(url)
+        r = requests.get(url, timeout=timeout)  # Pass timeout to requests.get()
         if (r.status_code == 301):
             url = f"https://{host}/xmlrpc"
 
@@ -55,7 +57,7 @@ class NZBGetAPI:
 
     def __proxy_call(self, method_call):
         try:
-            # Internal method to transalte xmlrpc exceptions to library ones.
+            # Internal method to translate xmlrpc exceptions to library ones.
             return method_call()
         except (xmlrpc.client.Error, ConnectionError) as err:
             raise NZBGetAPIException(str(err)) from None
