@@ -41,7 +41,6 @@ class NZBGetAPI:
             url = f"http{ssl}://{host}:{port}/{quote(username)}:{quote(password)}{urlbase}/xmlrpc"
         else:
             url = f"http://{host}/xmlrpc"
-        print(url)
         r = requests.get(url, timeout=timeout)  # Pass timeout to requests.get()
         if (r.status_code == 301):
             url = f"https://{host}/xmlrpc"
