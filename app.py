@@ -1,6 +1,6 @@
 import csv
+import json
 from io import TextIOWrapper
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
@@ -40,7 +40,7 @@ def extract_hostnames(csv_file_path):
         logging.error(f"An error occurred while reading the CSV file: {e}")
     return hostnames
 
-def search_for_keys(url, output_file: TextIOWrapper):
+def search_for_keys(url, output_file: TextIOWrapper, existing_hosts: set):
     logging.info(f"Now searching {url}")
     try:
         headers = {
@@ -51,16 +51,23 @@ def search_for_keys(url, output_file: TextIOWrapper):
         ng_api = pynzbgetapi.NZBGetAPI(url, timeout=5)
         json_response = ng_api.config()
         servers_found = 0
+        current_host = None
         for item in json_response:
             if item['Name'].startswith('Server'):
                 property_name = item["Name"].split(".", 1)[1]
                 if property_name == 'Host':
+                    current_host = item['Value']
                     servers_found += 1
-                    output_file.write('\n')
+                    if current_host not in existing_hosts:
+                        output_file.write('\n')
+                        existing_hosts.add(current_host)
+                    else:
+                        current_host = None
+                        break
 
-                if property_name in ['Host', 'Username', 'Password', 'Port']:
+                if current_host and property_name in ['Host', 'Username', 'Password', 'Port']:
                     output_file.write(item['Value'] + ';')
-                if property_name == 'Connections':
+                if current_host and property_name == 'Connections':
                     output_file.write(item['Value'])
 
         output_file.flush()
@@ -76,8 +83,18 @@ def search_for_keys(url, output_file: TextIOWrapper):
 def main(csv_file_path, output_file_path):
     hostnames = extract_hostnames(csv_file_path)
 
-    with open(output_file_path, 'w') as output_file:
-        output_file.write("Host;Port;Username;Password;Connections")
+    # Read existing hosts from the output file
+    existing_hosts = set()
+    if os.path.isfile(output_file_path):
+        with open(output_file_path, 'r') as output_file:
+            next(output_file)  # Skip the header line
+            for line in output_file:
+                host = line.strip().split(';')[0]
+                existing_hosts.add(host)
+
+    with open(output_file_path, 'a') as output_file:
+        if not existing_hosts:
+            output_file.write("Host;Port;Username;Password;Connections\n")
 
         successful_searches = 0
         unsuccessful_searches = 0
@@ -86,7 +103,8 @@ def main(csv_file_path, output_file_path):
             future_to_url = {
                 executor.submit(search_for_keys,
                                 hostname,
-                                output_file): hostname for hostname in hostnames}
+                                output_file,
+                                existing_hosts): hostname for hostname in hostnames if hostname not in existing_hosts}
 
             with tqdm.tqdm(total=len(future_to_url), desc="Processing Hosts", unit="host", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]") as pbar:
                 for future in as_completed(future_to_url):
@@ -106,6 +124,66 @@ def main(csv_file_path, output_file_path):
         print(f"\n{Fore.GREEN}Search completed.{Style.RESET_ALL}")
         print(f"{Fore.GREEN}Successful searches:{Style.RESET_ALL} {successful_searches}")
         print(f"{Fore.RED}Unsuccessful searches:{Style.RESET_ALL} {unsuccessful_searches}")
+
+    # Generate JSON output
+    results = []
+    unique_hosts = set()
+    with open(output_file_path, 'r') as output_file:
+        reader = csv.DictReader(output_file, delimiter=';')
+        for row in reader:
+            host_key = f"{row['Host']}:{row['Port']}"
+            if host_key not in unique_hosts:
+                results.append(row)
+                unique_hosts.add(host_key)
+
+    with open('results.json', 'w') as json_file:
+        json.dump(results, json_file, indent=4)
+
+    print(f"{Fore.GREEN}JSON output generated: results.json{Style.RESET_ALL}")
+
+    # Generate HTML output
+    with open('results.html', 'w') as html_file:
+        html_file.write('<!DOCTYPE html>\n')
+        html_file.write('<html>\n')
+        html_file.write('<head>\n')
+        html_file.write('  <title>Results</title>\n')
+        html_file.write('  <style>\n')
+        html_file.write('    table {\n')
+        html_file.write('      border-collapse: collapse;\n')
+        html_file.write('      width: 100%;\n')
+        html_file.write('    }\n')
+        html_file.write('    th, td {\n')
+        html_file.write('      text-align: left;\n')
+        html_file.write('      padding: 8px;\n')
+        html_file.write('    }\n')
+        html_file.write('    tr:nth-child(even) {background-color: #f2f2f2;}\n')
+        html_file.write('  </style>\n')
+        html_file.write('</head>\n')
+        html_file.write('<body>\n')
+        html_file.write('  <h2>Results</h2>\n')
+        html_file.write('  <table>\n')
+        html_file.write('    <tr>\n')
+        html_file.write('      <th>Host</th>\n')
+        html_file.write('      <th>Port</th>\n')
+        html_file.write('      <th>Username</th>\n')
+        html_file.write('      <th>Password</th>\n')
+        html_file.write('      <th>Connections</th>\n')
+        html_file.write('    </tr>\n')
+
+        for result in results:
+            html_file.write('    <tr>\n')
+            html_file.write(f'      <td>{result["Host"]}</td>\n')
+            html_file.write(f'      <td>{result["Port"]}</td>\n')
+            html_file.write(f'      <td>{result["Username"]}</td>\n')
+            html_file.write(f'      <td>{result["Password"]}</td>\n')
+            html_file.write(f'      <td>{result["Connections"]}</td>\n')
+            html_file.write('    </tr>\n')
+
+        html_file.write('  </table>\n')
+        html_file.write('</body>\n')
+        html_file.write('</html>\n')
+
+    print(f"{Fore.GREEN}HTML output generated: results.html{Style.RESET_ALL}")
 
 def download_hosts():
     try:
@@ -145,19 +223,12 @@ def download_hosts():
         logging.error(f"An error occurred while downloading hosts from Shodan: {e}")
 
 def simple_tui():
-    download_choice = input("Do you want to download a fresh list of hosts from Shodan and use that instead? (y/n): ")
-    if download_choice.lower() == 'y':
-        download_hosts()
-        csv_file_name = 'shodan_results.txt'
-    else:
-        csv_file_name = input("Enter name of CSV file (with or without '.csv'): ")
-        if not csv_file_name.lower().endswith('.csv'):
-            csv_file_name += '.csv'
+    download_hosts()
+    csv_file_name = 'shodan_results.txt'
 
     if os.path.isfile(csv_file_name):
         csvfilepaths = csv_file_name
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        outfilepathpath = f'found_keys_{timestamp}.csv'
+        outfilepathpath = 'found_keys.csv'
 
         main(csvfilepaths, outfilepathpath)
     else:
