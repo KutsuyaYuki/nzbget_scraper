@@ -4,16 +4,18 @@ A simple tool to scrape NZBGet servers from Shodan.
 
 ## How to use
 
-1. `chmod +x install.sh`
-2. `./install.sh`
-3. activate the venv `source venv/bin/activate`
-4. run `python app.py`
+1. `git clone https://github.com/KutsuyaYuki/nzbget_scraper`
+2. `cd nzbget_scraper`
+3. `chmod +x install.sh`
+4. `./install.sh`
+5. Activate the venv `source venv/bin/activate`
+6. `mv .env.example .env`.
+7. Fill in your Shodan API key in `.env`
+7. Run `python app.py`
 
 ## Requirements
 
 * Python 3.9+
-* `shodan` library (install with `pip install -U --user shodan`)
-* Finally, initialize the Shodan CLI with your API key: `shodan init API_KEY`
 
 ## License
 
