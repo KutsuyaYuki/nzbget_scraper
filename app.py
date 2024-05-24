@@ -25,13 +25,15 @@ logging.basicConfig(level=logging.CRITICAL,
                     ])
 
 class hostResult:
+    source = None
     host = None
     port = None
     username = None
     password = None
     connections = None
     
-    def __init__(self, host, port, username, password, connections):
+    def __init__(self, source, host, port, username, password, connections):
+        self.source = source
         self.host = host
         self.port = port
         self.username = username
@@ -120,6 +122,7 @@ def save_html(results: set[hostResult]):
         html_file.write('  <h2>Results</h2>\n')
         html_file.write('  <table>\n')
         html_file.write('    <tr>\n')
+        html_file.write('      <th>Source</th>\n')
         html_file.write('      <th>Host</th>\n')
         html_file.write('      <th>Port</th>\n')
         html_file.write('      <th>Username</th>\n')
@@ -129,6 +132,7 @@ def save_html(results: set[hostResult]):
 
         for result in results:
             html_file.write('    <tr>\n')
+            html_file.write(f'      <td>{result.source}</td>\n')
             html_file.write(f'      <td>{result.host}</td>\n')
             html_file.write(f'      <td>{result.port}</td>\n')
             html_file.write(f'      <td>{result.username}</td>\n')
@@ -191,7 +195,7 @@ def search_for_keys(url) -> set[hostResult]:
             # if it's a complete host, append it to the list
             if current_host and port and username and password and connections:
                 servers_found += 1
-                hosts.append(hostResult(current_host, port, username, password, connections)) 
+                hosts.append(hostResult(url, current_host, port, username, password, connections)) 
         
         logging.info(f"Found {servers_found} servers in {url}")
         return hosts
