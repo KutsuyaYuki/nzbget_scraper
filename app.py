@@ -1,13 +1,11 @@
+import os
 import csv
 import json
-from io import TextIOWrapper
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
-
 import tqdm
 import pynzbgetapi
 import requests
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from shodan import Shodan
 from colorama import init, Fore, Style
@@ -26,6 +24,65 @@ logging.basicConfig(level=logging.CRITICAL,
                         logging.StreamHandler()
                     ])
 
+class hostResult:
+    host = None
+    port = None
+    username = None
+    password = None
+    connections = None
+    
+    def __init__(self, host, port, username, password, connections):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.connections = connections
+        
+    
+    def toJSON(self):
+        return self.__dict__
+
+def main():
+    shodan_hosts_file = 'shodan_results.txt'
+    download_hosts(shodan_hosts_file)
+    hostnames = extract_hostnames(shodan_hosts_file)
+
+    successful_searches = 0
+    unsuccessful_searches = 0
+    results: set[hostResult] = []
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_url = {executor.submit(search_for_keys, hostname): hostname for hostname in hostnames}
+
+        with tqdm.tqdm(total=len(future_to_url), desc="Processing Hosts", unit="host", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]") as pbar:
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    results.extend(future.result())
+                    successful_searches += 1
+                except Exception as e:
+                    logging.error(f"An error occurred while processing {url}: {e}")
+                    unsuccessful_searches += 1
+                pbar.update(1)
+
+    logging.info("Search completed.")
+    logging.info(f"Successful searches: {successful_searches}")
+    logging.info(f"Unsuccessful searches: {unsuccessful_searches}")
+    print(f"\n{Fore.GREEN}Search completed.{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}Successful searches:{Style.RESET_ALL} {successful_searches}")
+    print(f"{Fore.RED}Unsuccessful searches:{Style.RESET_ALL} {unsuccessful_searches}")
+    
+    # read the results.json file before saving, to avoid duplicates
+    if os.path.exists('results.json'):
+        with open('results.json', 'r') as json_file:
+            existing_results = set[hostResult](json.load(json_file, object_hook=lambda d: hostResult(**d)))
+            
+            # join and distinct the lists
+            results.extend(x for x in existing_results if x.toJSON() not in [y.toJSON() for y in results])
+    
+    save_json(results)
+    save_html(results)
+
 def extract_hostnames(csv_file_path):
     hostnames = []
     try:
@@ -40,108 +97,8 @@ def extract_hostnames(csv_file_path):
         logging.error(f"An error occurred while reading the CSV file: {e}")
     return hostnames
 
-def search_for_keys(url, output_file: TextIOWrapper, existing_hosts: set):
-    logging.info(f"Now searching {url}")
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        }
-
-        ng_api = pynzbgetapi.NZBGetAPI(url, timeout=5)
-        json_response = ng_api.config()
-        servers_found = 0
-        current_host = None
-        for item in json_response:
-            if item['Name'].startswith('Server'):
-                property_name = item["Name"].split(".", 1)[1]
-                if property_name == 'Host':
-                    current_host = item['Value']
-                    servers_found += 1
-                    if current_host not in existing_hosts:
-                        output_file.write('\n')
-                        existing_hosts.add(current_host)
-                    else:
-                        current_host = None
-                        break
-
-                if current_host and property_name in ['Host', 'Username', 'Password', 'Port']:
-                    output_file.write(item['Value'] + ';')
-                if current_host and property_name == 'Connections':
-                    output_file.write(item['Value'])
-
-        output_file.flush()
-        logging.info(f"Found {servers_found} servers in {url}")
-
-    except requests.exceptions.Timeout:
-        logging.warning(f"Connection to {url} timed out after 5 seconds.")
-        raise  # Re-raise the exception to be caught by the caller
-    except Exception as e:
-        logging.error(f"An error occurred while trying to get {url}: {e}")
-        raise  # Re-raise the exception to be caught by the caller
-
-def main(csv_file_path, output_file_path):
-    hostnames = extract_hostnames(csv_file_path)
-
-    # Read existing hosts from the output file
-    existing_hosts = set()
-    if os.path.isfile(output_file_path):
-        with open(output_file_path, 'r') as output_file:
-            next(output_file)  # Skip the header line
-            for line in output_file:
-                host = line.strip().split(';')[0]
-                existing_hosts.add(host)
-
-    with open(output_file_path, 'a') as output_file:
-        if not existing_hosts:
-            output_file.write("Host;Port;Username;Password;Connections\n")
-
-        successful_searches = 0
-        unsuccessful_searches = 0
-
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_url = {
-                executor.submit(search_for_keys,
-                                hostname,
-                                output_file,
-                                existing_hosts): hostname for hostname in hostnames if hostname not in existing_hosts}
-
-            with tqdm.tqdm(total=len(future_to_url), desc="Processing Hosts", unit="host", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]") as pbar:
-                for future in as_completed(future_to_url):
-                    url = future_to_url[future]
-                    try:
-                        future.result()
-                        successful_searches += 1
-                    except Exception as e:
-                        logging.error(f"An error occurred while processing {url}: {e}")
-                        unsuccessful_searches += 1
-                    pbar.update(1)
-
-        logging.info("Search completed.")
-        logging.info(f"Successful searches: {successful_searches}")
-        logging.info(f"Unsuccessful searches: {unsuccessful_searches}")
-
-        print(f"\n{Fore.GREEN}Search completed.{Style.RESET_ALL}")
-        print(f"{Fore.GREEN}Successful searches:{Style.RESET_ALL} {successful_searches}")
-        print(f"{Fore.RED}Unsuccessful searches:{Style.RESET_ALL} {unsuccessful_searches}")
-
-    # Generate JSON output
-    results = []
-    unique_hosts = set()
-    with open(output_file_path, 'r') as output_file:
-        reader = csv.DictReader(output_file, delimiter=';')
-        for row in reader:
-            host_key = f"{row['Host']}:{row['Port']}"
-            if host_key not in unique_hosts:
-                results.append(row)
-                unique_hosts.add(host_key)
-
-    with open('results.json', 'w') as json_file:
-        json.dump(results, json_file, indent=4)
-
-    print(f"{Fore.GREEN}JSON output generated: results.json{Style.RESET_ALL}")
-
-    # Generate HTML output
+def save_html(results: set[hostResult]):
+        # Generate HTML output
     with open('results.html', 'w') as html_file:
         html_file.write('<!DOCTYPE html>\n')
         html_file.write('<html>\n')
@@ -172,11 +129,11 @@ def main(csv_file_path, output_file_path):
 
         for result in results:
             html_file.write('    <tr>\n')
-            html_file.write(f'      <td>{result["Host"]}</td>\n')
-            html_file.write(f'      <td>{result["Port"]}</td>\n')
-            html_file.write(f'      <td>{result["Username"]}</td>\n')
-            html_file.write(f'      <td>{result["Password"]}</td>\n')
-            html_file.write(f'      <td>{result["Connections"]}</td>\n')
+            html_file.write(f'      <td>{result.host}</td>\n')
+            html_file.write(f'      <td>{result.port}</td>\n')
+            html_file.write(f'      <td>{result.username}</td>\n')
+            html_file.write(f'      <td>{result.password}</td>\n')
+            html_file.write(f'      <td>{result.connections}</td>\n')
             html_file.write('    </tr>\n')
 
         html_file.write('  </table>\n')
@@ -185,7 +142,67 @@ def main(csv_file_path, output_file_path):
 
     print(f"{Fore.GREEN}HTML output generated: results.html{Style.RESET_ALL}")
 
-def download_hosts():
+def save_json(results: set[hostResult]):
+    with open('results.json', 'w') as json_file:
+        json.dump([item.toJSON() for item in results], json_file, indent=4)
+
+    print(f"{Fore.GREEN}JSON output generated: results.json{Style.RESET_ALL}")
+
+def search_for_keys(url) -> set[hostResult]:
+    hosts = []
+    logging.info(f"Now searching {url}")
+    try:
+        ng_api = pynzbgetapi.NZBGetAPI(url, timeout=5)
+        json_response = ng_api.config()
+        servers_found = 0
+        current_host = None
+        
+        # filter all the servers out of the configuration
+        result = [i for i in json_response if i['Name'].startswith('Server')]
+        
+        current_host = None
+        port = None
+        username = None
+        password = None
+        connections = None
+
+        for item in result:
+            property_name = item["Name"].split(".", 1)[1]
+            property_value = item["Value"]
+            
+            # getting a host means a new set of server properties
+            if property_name == "Host":
+                current_host = property_value
+                port = None
+                username = None
+                password = None
+                connections = None
+            elif property_name == "Port":
+                port = property_value
+            elif property_name == "Username":
+                username = property_value
+            elif property_name == "Password":
+                password = property_value
+            elif property_name == "Connections":
+                connections = property_value
+            else:
+                continue
+            
+            # if it's a complete host, append it to the list
+            if current_host and port and username and password and connections:
+                servers_found += 1
+                hosts.append(hostResult(current_host, port, username, password, connections)) 
+        
+        logging.info(f"Found {servers_found} servers in {url}")
+        return hosts
+    except requests.exceptions.Timeout:
+        logging.warning(f"Connection to {url} timed out after 5 seconds.")
+        raise  # Re-raise the exception to be caught by the caller
+    except Exception as e:
+        logging.error(f"An error occurred while trying to get {url}: {e}")
+        raise  # Re-raise the exception to be caught by the caller
+
+def download_hosts(shodan_hosts_file: str):
     try:
         # Get the Shodan API key from the environment variable
         api_key = os.getenv('SHODAN_API_KEY')
@@ -211,7 +228,7 @@ def download_hosts():
 
         # Save results to file
         if hostnames_ports:
-            with open('shodan_results.txt', 'w') as f:
+            with open(shodan_hosts_file, 'w') as f:
                 for item in tqdm.tqdm(hostnames_ports, desc="Saving Hosts", unit="host", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"):
                     f.write("%s\n" % item)
 
@@ -222,22 +239,11 @@ def download_hosts():
     except Exception as e:
         logging.error(f"An error occurred while downloading hosts from Shodan: {e}")
 
-def simple_tui():
-    download_hosts()
-    csv_file_name = 'shodan_results.txt'
-
-    if os.path.isfile(csv_file_name):
-        csvfilepaths = csv_file_name
-        outfilepathpath = 'found_keys.csv'
-
-        main(csvfilepaths, outfilepathpath)
-    else:
-        print(f"{Fore.RED}File not found: {csv_file_name}{Style.RESET_ALL}")
-
 if __name__ == '__main__':
     try:
-        simple_tui()
+        main()
     except KeyboardInterrupt:
         logging.info("Program interrupted by user.")
     except Exception as e:
         logging.critical(f"An unexpected error occurred: {e}")
+
